@@ -60,6 +60,21 @@ detect_port_scan() {
     rm "$seen_ips_file"
 }
 
+# display sofware installs/removals with apt package manager
+software_updates() {
+    grep -E 'remove|install' /var/log/apt/history.log
+}
+
+# display hardware events from systemd-udevd
+hardware_events() {
+    journalctl -u systemd-udevd | cat
+}
+
+#display boot messages
+boot_messages() {
+    journalctl -b | grep 'boot' | cat 
+}
+
 # Main function
 main() {
     echo "Succesful SSH attempts:"
@@ -76,7 +91,19 @@ main() {
     echo
     echo "Detecting potential port scan attempts"
     echo "------------------------"
-    detect_port_scan
+    #detect_port_scan
+    echo
+    echo "Software Changes"
+    echo "----------------"
+    software_updates
+    echo
+    echo "Hardware Events"
+    echo "----------------"
+    hardware_events
+    echo
+    echo "Boot Messages"
+    echo "----------------"   
+    boot_messages
 }
 
 # Parse command line options
