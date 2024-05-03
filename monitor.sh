@@ -1,62 +1,98 @@
 #!/bin/bash
 
-# Function to monitor SSH login attempts
-monitor_ssh_login() {
-    journalctl -u ssh | grep "Accepted password for" | while read -r line; do
-        echo "SSH login attempt: $line"
+monitor_successful_ssh_login() {
+    # Grep for accepted password and parse out relevant information for display
+    journalctl -u ssh $time_filter $message_level_option | grep "Accepted password for" | while read -r line; do
+        login_time=$(echo "$line" | awk '{print $1,$3}')
+        username=$(echo "$line" | awk '{print $9}')
+        echo "$login_time $username"
     done
 }
 
-# Function to monitor failed SSH authentication attempts
-monitor_failted_ssh_login() {
-    journalctl -u ssh | grep "Failed password for" | while read -r line; do
-        echo "Failed SSH authentication attempt: $line"
-    done
+monitor_failed_ssh_login() {
+    # Use awk for pattern matching and printing within the journalctl command
+    journalctl -u ssh $time_filter $message_level_option | grep 'Failed password for' | awk '{print "Failed SSH authentication attempt: ", $0}'
 }
 
-# Function to monitor failed local login attempts
 monitor_failed_local_login() {
-    journalctl | grep "Failed password for" | while read -r line; do
-        echo "Failed local login attempt: $line"
+    # Grep for accepted password and parse out relevant information for display
+    journalctl $time_filter $message_level_option | grep "Failed password for" | grep -v ssh | while read -r line; do
+        login_time=$(echo "$line" | awk '{print $1,$3}')
+        username=$(echo "$line" | awk '{print $6}')
+        echo "$login_time $username"
     done
 }
 
 # Function to detect potential port scan attempts in UFW logs
 detect_port_scan() {
-    echo "Detecting potential port scan attempts..."
+    # Store unique source IP addresses in a file
+    seen_ips_file="/tmp/seen_ips.txt"
 
-    # Store unique source IP addresses in an associative array
-    declare -A seen_ips
+    # Create an empty file if it doesn't exist
+    touch "$seen_ips_file"
 
     # Parse UFW logs and analyze connection patterns
-    grep "UFW BLOCK" /var/log/ufw.log | while read -r line; do
+    journalctl $time_filter $message_level_option | grep "UFW BLOCK" | while read -r line; do
         source_ip=$(echo "$line" | grep -oP 'SRC=\K[0-9.]+')
-        connection_count=$(grep "SRC=$source_ip" /var/log/ufw.log | grep "UFW BLOCK" | wc -l)
+
+        # Check if the source IP has been seen before
+        if grep -q "$source_ip" "$seen_ips_file"; then
+            continue
+        fi
+
+        # Count the number of connection attempts from the source IP
+        connection_count=$(journalctl $time_filter $message_level_option | grep "SRC=$source_ip" | grep "UFW BLOCK" | wc -l)
 
         # Set threshold for number of connection attempts
         threshold=10
 
-        # If connection count exceeds threshold and source IP is not seen before, print potential port scan attempt
-        if [ "$connection_count" -gt "$threshold" ] && [ -z "${seen_ips[$source_ip]}" ]; then
+        # If connection count exceeds threshold, print potential port scan attempt
+        if [ "$connection_count" -gt "$threshold" ]; then
             echo "Potential port scan attempt detected:"
             echo "Source IP: $source_ip"
             echo "Connection Count: $connection_count"
             echo
 
             # Mark source IP as seen
-            seen_ips[$source_ip]=1
+            echo "$source_ip" >>"$seen_ips_file"
         fi
     done
-    echo $seen_ips
+    rm "$seen_ips_file"
 }
 
 # Main function
 main() {
-    monitor_ssh_login
-    monitor_failted_ssh_login
+    echo "Succesful SSH attempts:"
+    echo "------------------------"
+    monitor_successful_ssh_login
+    echo
+    echo "Failed SSH attempts:"
+    echo "------------------------"
+    monitor_failed_ssh_login
+    echo
+    echo "Failed local login attempts:"
+    echo "------------------------"
     monitor_failed_local_login
+    echo
+    echo "Detecting potential port scan attempts"
+    echo "------------------------"
     detect_port_scan
 }
+
+# Parse command line options
+while getopts ":t:l:" opt; do
+    case $opt in
+        t)
+            time_filter="--since $OPTARG"
+            ;;
+        l)
+            message_level_option="-p $OPTARG"
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            ;;
+    esac
+done
 
 # Run the main function
 main
